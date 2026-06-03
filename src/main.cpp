@@ -3,41 +3,61 @@
 #include <chrono>
 
 #include "broker/MessageBroker.h"
-#include "subscribers/ISubscriber.h"
 #include "ecu/EngineECU.h"
-
-// A simple inline subscriber that just prints every message it receives
-class ConsolePrinter : public ISubscriber {
-public:
-    void onMessage(const Message& msg) override {
-        std::cout << "[" << msg.timestamp << "ms] "
-                  << msg.source << " | "
-                  << msg.topic << " = "
-                  << msg.value << " " << msg.unit
-                  << "\n";
-    }
-};
+#include "ecu/BatteryECU.h"
+#include "ecu/AdasECU.h"
+#include "ecu/BodyECU.h"
+#include "subscribers/Dashboard.h"
+#include "subscribers/AlertManager.h"
+#include "subscribers/DataLogger.h"
+#include "subscribers/FaultInjector.h"
 
 int main() {
     std::cout << "=== IVI Message Bus Starting ===\n\n";
 
-    // Create our simple console printer subscriber
-    ConsolePrinter printer;
+    Dashboard    dashboard;
+    AlertManager alertManager;
+    DataLogger   logger("vehicle_log.csv");
 
-    // Subscribe it to engine topics
-    MessageBroker::getInstance().subscribe("engine/rpm",  &printer);
-    MessageBroker::getInstance().subscribe("engine/temp", &printer);
+    // Connect alert history to dashboard so alerts stay visible
+    dashboard.setAlertManager(&alertManager);
 
-    // Start the engine ECU (runs in its own thread)
-    EngineECU engine;
+    const std::vector<std::string> allTopics = {
+        "engine/rpm", "engine/temp",
+        "battery/soc", "battery/voltage", "battery/temperature",
+        "adas/speed", "adas/front_proximity", "adas/lane_clear",
+        "body/lights", "body/doors_locked", "body/wipers"
+    };
+
+    auto& broker = MessageBroker::getInstance();
+    for (const auto& topic : allTopics) {
+        broker.subscribe(topic, &dashboard);
+        broker.subscribe(topic, &alertManager);
+        broker.subscribe(topic, &logger);
+    }
+
+    FaultInjector injector;
+    injector.start();
+
+    EngineECU  engine;
+    BatteryECU battery;
+    AdasECU    adas;
+    BodyECU    body;
+
     engine.start();
+    battery.start();
+    adas.start();
+    body.start();
 
-    // Let it run for 10 seconds
-    std::this_thread::sleep_for(std::chrono::seconds(10));
+    std::this_thread::sleep_for(std::chrono::seconds(60));
 
-    // Stop cleanly
     engine.stop();
+    battery.stop();
+    adas.stop();
+    body.stop();
+    injector.stop();
 
     std::cout << "\n=== IVI Message Bus Stopped ===\n";
+    std::cout << "Log saved to vehicle_log.csv\n";
     return 0;
 }
